@@ -1,0 +1,9 @@
+aioboto3
+boto3
+botocore
+PyPDF2
+pandas
+pyarrow
+python-dotenv
+watchtower
+aiofiles
