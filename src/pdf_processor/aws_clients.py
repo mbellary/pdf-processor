@@ -1,6 +1,6 @@
 import aioboto3
 import boto3
-from .config import AWS_REGION, SECRET_NAME
+from pdf_processor.config import AWS_REGION, SECRET_NAME
 
 # aioboto3 session
 _session = aioboto3.Session(region_name=AWS_REGION)

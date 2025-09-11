@@ -4,6 +4,7 @@ import os
 import io
 import json
 import logging
+import time
 import uuid
 import gzip
 import boto3
@@ -11,19 +12,25 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from datetime import datetime
 from PyPDF2 import PdfReader, PdfWriter  # not using pypdf as implemented in gpt-5
-from .utils import download_s3_to_file, write_parquet_async, upload_file_to_s3
-from .manifest import upload_manifest_entry
-from .config import OUTPUT_S3_BUCKET, OUTPUT_S3_PREFIX, DYNAMO_TABLE_NAME, PARQUET_MAX_CHUNK_SIZE_MB
-from .aws_clients import dynamodb_client
+from pdf_processor.utils import download_s3_to_file, write_parquet_async, upload_file_to_s3
+from pdf_processor.manifest import upload_manifest_entry
+from pdf_processor.config import OUTPUT_S3_BUCKET, OUTPUT_S3_PREFIX, PDF_FILE_STATE, PARQUET_MAX_CHUNK_SIZE_MB, \
+AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY_ID, AWS_DDB_ACCESS_KEY_ID, AWS_DDB_SECRET_ACCESS_KEY_ID, ENDPOINT_URL, \
+    OCR_PARQUET_STATE, PDF_OCR_PARQUET_SQS_URL
+from pdf_processor.aws_clients import dynamodb_client
 import aioboto3
 
-logger = logging.getLogger("pdf_processor.processor")
+from pdf_processor.logger import get_logger
+
+from pdf_processor.utils import check_if_file_enqueued
+
+logger = get_logger("processor")
 
 def _now_iso():
     return datetime.utcnow().isoformat() + "Z"
 
 async def _get_dynamo_item(ddb, s3_key: str):
-    resp = await ddb.get_item(TableName=DYNAMO_TABLE_NAME,
+    resp = await ddb.get_item(TableName=PDF_FILE_STATE,
                               Key={"s3_key": {"S": s3_key}},
                               ConsistentRead=True)
     return resp.get("Item")
@@ -42,7 +49,7 @@ async def _init_or_mark_processing(ddb, s3_key: str):
     now = _now_iso()
     # Use update_item to create if not exists and set status to processing
     await ddb.update_item(
-        TableName=DYNAMO_TABLE_NAME,
+        TableName=PDF_FILE_STATE,
         Key={"s3_key": {"S": s3_key}},
         UpdateExpression="SET #st = :processing, #lu = :lu, attempts = if_not_exists(attempts, :zero_n), pages_processed = if_not_exists(pages_processed, :zero_n)",
         ExpressionAttributeNames={"#st": "status", "#lu": "last_updated"},
@@ -53,7 +60,7 @@ async def _init_or_mark_processing(ddb, s3_key: str):
 async def _increment_pages_processed(ddb, s3_key: str, increment: int = 1):
     now = _now_iso()
     await ddb.update_item(
-        TableName=DYNAMO_TABLE_NAME,
+        TableName=PDF_FILE_STATE,
         Key={"s3_key": {"S": s3_key}},
         UpdateExpression="ADD pages_processed :inc SET last_updated = :lu",
         ExpressionAttributeValues={":inc": {"N": str(increment)}, ":lu": {"S": now}},
@@ -62,7 +69,7 @@ async def _increment_pages_processed(ddb, s3_key: str, increment: int = 1):
 async def _set_done(ddb, s3_key: str, total_pages: int):
     now = _now_iso()
     await ddb.update_item(
-        TableName=DYNAMO_TABLE_NAME,
+        TableName=PDF_FILE_STATE,
         Key={"s3_key": {"S": s3_key}},
         UpdateExpression="SET #st = :done, total_pages = :tp, last_updated = :lu",
         ExpressionAttributeNames={"#st": "status"},
@@ -73,7 +80,7 @@ async def _mark_failure(ddb, s3_key: str, err_msg: str = ""):
     now = _now_iso()
     # increment attempts and set status=failed
     await ddb.update_item(
-        TableName=DYNAMO_TABLE_NAME,
+        TableName=PDF_FILE_STATE,
         Key={"s3_key": {"S": s3_key}},
         UpdateExpression="ADD attempts :one SET #st = :failed, last_error = :err, last_updated = :lu",
         ExpressionAttributeNames={"#st": "status"},
@@ -82,7 +89,15 @@ async def _mark_failure(ddb, s3_key: str, err_msg: str = ""):
 
 class ParquetBatchWriter:
     def __init__(self, s3_bucket, output_prefix, max_chunk_size_mb=PARQUET_MAX_CHUNK_SIZE_MB):
-        self.s3 = boto3.client("s3")
+        self.s3 = boto3.client("s3", region_name=AWS_REGION, endpoint_url=ENDPOINT_URL, aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY_ID)
+        self.sqs = boto3.client("sqs", region_name=AWS_REGION,
+                                aws_access_key_id=AWS_DDB_ACCESS_KEY_ID,
+                                aws_secret_access_key=AWS_DDB_SECRET_ACCESS_KEY_ID,
+                                endpoint_url=ENDPOINT_URL)
+        self.ddb = boto3.client("dynamodb", region_name=AWS_REGION,
+                                aws_access_key_id=AWS_DDB_ACCESS_KEY_ID,
+                                aws_secret_access_key=AWS_DDB_SECRET_ACCESS_KEY_ID,
+                                endpoint_url=ENDPOINT_URL)
         self.bucket = s3_bucket
         self.prefix = output_prefix
         self.max_chunk = max_chunk_size_mb * 1024 * 1024
@@ -129,6 +144,33 @@ class ParquetBatchWriter:
         self.s3.upload_fileobj(buf, self.bucket, key)
         self.parts.append(key)
 
+        # add item to dynamodb
+        try:
+            response = check_if_file_enqueued(self.ddb, key, OCR_PARQUET_STATE)
+            if not response:
+                self.ddb.put_item(
+                    TableName=OCR_PARQUET_STATE,
+                    Item={
+                        's3_key': {'S': key},
+                        'status': {"S": "enqueued"},
+                        'timestamp': {'N': str(int(time.time()))}
+                    },
+                    ConditionExpression="attribute_not_exists(s3_key)"
+                )
+            logger.info(f'Successfully updated key {key} to dynamo db.')
+        except Exception as ddb_e:
+            logger.warning(f'Failed to update key {key} to dynamo db: {ddb_e}')
+
+        # publish to SQS
+        try:
+            response = self.sqs.send_message(
+                QueueUrl=PDF_OCR_PARQUET_SQS_URL,
+                MessageBody=json.dumps({'s3_key': key})
+            )
+            logger.info(f"Successfully enqueued S3 key {key} to SQS. Message ID: {response['MessageId']}")
+        except Exception as sqs_e:
+            logger.warning(f"Error sending message to SQS for {key}: {sqs_e}")
+
         # reset buffer
         self.buffer = {"doc_id": [], "page_number": [], "s3_source": [], "page_bytes": []}
         self.current_size = 0
@@ -147,7 +189,7 @@ async def process_pdf_per_page(s3_bucket_uri: str, s3_key: str, writer: ParquetB
     if ddb_client is None:
         # create a short-lived client if not provided
         session = aioboto3.Session()
-        ddb_client = await session.client("dynamodb").__aenter__()  # we will not close to keep calling functions simple
+        ddb_client = await session.client("dynamodb", endpoint_url=ENDPOINT_URL, aws_access_key_id=AWS_DDB_ACCESS_KEY_ID, aws_secret_access_key=AWS_DDB_SECRET_ACCESS_KEY_ID).__aenter__()  # we will not close to keep calling functions simple
 
     # First, check DynamoDB: if status == done, skip
     try:
@@ -182,10 +224,10 @@ async def process_pdf_per_page(s3_bucket_uri: str, s3_key: str, writer: ParquetB
                 compressed_bytes = gzip.compress(raw_bytes)
 
                 # update manifest (best-effort)
-                try:
-                    upload_manifest_entry({"s3_key": s3_key, "page": i + 1, "ts": _now_iso()})
-                except Exception as e:
-                    logger.warning("Manifest update failed for page %s: %s", i + 1, e)
+                # try:
+                #     upload_manifest_entry({"s3_key": s3_key, "page": i + 1, "ts": _now_iso()})
+                # except Exception as e:
+                #     logger.warning("Manifest update failed for page %s: %s", i + 1, e)
 
                 # DynamoDB per-page increment (atomic)
                 try:

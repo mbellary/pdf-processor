@@ -16,8 +16,8 @@ import aioboto3
 import botocore
 import boto3
 
-from pdf_processor.config import SQS_MAX_MSG_SIZE, SQS_SAFE_BODY_BYTES, SQS_BATCH_MAX, INPUT_S3_BUCKET, SQS_QUEUE_URL,AWS_REGION, \
-TEST_AWS_ACCESS_KEY_ID, TEST_AWS_SECRET_ACCESS_KEY_ID, TEST_ENDPOINT_URL, MAX_FLUSH_SIZE, MAX_KEYS_PER_MESSAGE
+from pdf_processor.config import SQS_MAX_MSG_SIZE, SQS_SAFE_BODY_BYTES, SQS_BATCH_MAX, INPUT_S3_BUCKET, ENQUEUE_PDF_SQS_URL,AWS_REGION, \
+AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY_ID, ENDPOINT_URL, MAX_FLUSH_SIZE, MAX_KEYS_PER_MESSAGE
 
 from pdf_processor.logger import get_logger
 
@@ -43,9 +43,9 @@ async def list_inventory_objects(inventory_bucket: str, inventory_prefix: str) -
     We search under the given prefix. For very large inventories, this list is still tiny (dozens).
     """
     s3 = boto3.client("s3",  region_name = AWS_REGION,
-                                                    aws_access_key_id=TEST_AWS_ACCESS_KEY_ID,
-                                                    aws_secret_access_key=TEST_AWS_SECRET_ACCESS_KEY_ID,
-                                                    endpoint_url=TEST_ENDPOINT_URL)
+                                                    aws_access_key_id=AWS_ACCESS_KEY_ID,
+                                                    aws_secret_access_key=AWS_SECRET_ACCESS_KEY_ID,
+                                                    endpoint_url=ENDPOINT_URL)
     paginator = s3.get_paginator("list_objects_v2")
     keys = []
     for page in paginator.paginate(Bucket=inventory_bucket, Prefix=inventory_prefix):
@@ -92,9 +92,9 @@ def _open_s3_object_stream(bucket: str, key: str):
     Uses blocking I/O; we'll call it in a thread to avoid blocking the event loop.
     """
     s3 = boto3.client("s3",  region_name = AWS_REGION,
-                                                    aws_access_key_id=TEST_AWS_ACCESS_KEY_ID,
-                                                    aws_secret_access_key=TEST_AWS_SECRET_ACCESS_KEY_ID,
-                                                    endpoint_url=TEST_ENDPOINT_URL)
+                                                    aws_access_key_id=AWS_ACCESS_KEY_ID,
+                                                    aws_secret_access_key=AWS_SECRET_ACCESS_KEY_ID,
+                                                    endpoint_url=ENDPOINT_URL)
     obj = s3.get_object(Bucket=bucket, Key=key)
     body = obj["Body"]
     raw = body.read()
@@ -264,7 +264,7 @@ async def consumer(
     Pulls message bodies from queue, sends to SQS in batches of 10.
     """
     session = aioboto3.Session()
-    async with session.client("sqs", region_name=AWS_REGION, endpoint_url=TEST_ENDPOINT_URL, aws_access_key_id=TEST_AWS_ACCESS_KEY_ID, aws_secret_access_key=TEST_AWS_SECRET_ACCESS_KEY_ID) as sqs_client:
+    async with session.client("sqs", region_name=AWS_REGION, endpoint_url=ENDPOINT_URL, aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY_ID) as sqs_client:
         pending: List[str] = []
         sent_msgs = 0
         start = time.time()
@@ -304,7 +304,7 @@ async def main():
     p = argparse.ArgumentParser(description="One-time bulk enqueue of existing S3 objects from S3 Inventory into SQS.")
     p.add_argument("--inventory-bucket", default=INPUT_S3_BUCKET)
     p.add_argument("--inventory-prefix", default='inventory/s3_inventory.csv', help="Prefix that contains the inventory CSV(.gz) files for a given date.")
-    p.add_argument("--sqs-queue-url", default=SQS_QUEUE_URL)
+    p.add_argument("--sqs-queue-url", default=ENQUEUE_PDF_SQS_URL)
     p.add_argument("--filter-prefix", default=None)
     p.add_argument("--filter-suffix", default=None, help="e.g., .pdf")
     p.add_argument("--keys-per-message", type=int, default=2, help="Target keys per message; script size-limits to <=256KB.")
@@ -331,7 +331,7 @@ async def main():
     # A few consumers is usually enough; each already batches internally.
     consumers = [
         asyncio.create_task(
-            consumer(q, args.sqs_queue_url, args.fifo, args.fifo_group_id, args.concurrency, args.dry_run)
+            consumer(q, ENQUEUE_PDF_SQS_URL, args.fifo, args.fifo_group_id, args.concurrency, args.dry_run)
         )
         for _ in range(4)
     ]
