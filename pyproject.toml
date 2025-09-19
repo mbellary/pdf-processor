@@ -25,3 +25,6 @@ worker = "pdf_processor.worker:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build]
+packages = ["src/pdf_processor"]

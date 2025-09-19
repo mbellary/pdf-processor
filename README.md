@@ -35,7 +35,7 @@ pdf_processor/
 │ ├── utils.py # helpers (S3 I/O, parquet writer)
 │ └── logger.py # CloudWatch + console logging
 ├── requirements.txt
-├── .env.example
+├── .env.localstack.example
 ├── run_worker.sh
 └── README.md
 ```
@@ -175,7 +175,7 @@ LOG_GROUP_NAME=/pdf-processor/logs
 ```
 - Run locally:
 ```bash
-    docker run --env-file .env pdf-processor:latest
+    docker run --env-file .env.localstack pdf-processor:latest
 ```
 - Deploy via ECS Fargate using a TaskDefinition with:
     - NetworkMode: awsvpc

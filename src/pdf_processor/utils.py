@@ -10,7 +10,9 @@ from typing import Tuple
 
 from botocore.exceptions import ClientError
 
-from pdf_processor.config import AWS_REGION, PDF_FILE_STATE, ENDPOINT_URL,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY_ID
+from pdf_processor.config import AWS_REGION, PDF_FILE_STATE_NAME
+from pdf_processor.aws_clients import get_aboto3_client
+
 
 _executor = ThreadPoolExecutor(max_workers=4)
 
@@ -24,14 +26,16 @@ def parse_s3_uri(uri: str) -> Tuple[str, str]:
     return bucket, key
 
 async def download_s3_to_file(s3_bucket_uri: str, s3_key: str, local_path: str):
-    sess = Session(region_name=AWS_REGION)
-    async with sess.client('s3', region_name=AWS_REGION, endpoint_url=ENDPOINT_URL, aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY_ID) as s3:
+    #sess = Session(region_name=AWS_REGION)
+    #async with sess.client('s3', region_name=AWS_REGION, endpoint_url=ENDPOINT_URL, aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY_ID) as s3:
+    async with await get_aboto3_client("s3") as s3:
         await s3.download_file(Bucket=s3_bucket_uri.replace("s3://","") if s3_bucket_uri.startswith("s3://") else s3_bucket_uri, Key=s3_key, Filename=local_path)
 
 async def upload_file_to_s3(local_path: str, s3_uri: str):
     bucket, key = parse_s3_uri(s3_uri)
-    sess = Session(region_name=AWS_REGION)
-    async with sess.client('s3') as s3:
+    #sess = Session(region_name=AWS_REGION)
+    #async with sess.client('s3') as s3:
+    async with await get_aboto3_client("s3") as s3:
         await s3.upload_file(local_path, bucket, key)
 
 def write_pages_to_parquet(records: list, out_path: str):
@@ -66,3 +70,7 @@ def check_if_file_enqueued(ddb_client, s3_key, table_name):
     except ClientError as e:
         print(f"Error checking item in DynamoDB: {e}")
         return False
+
+def get_queue_url(sqs_client, queue_name: str) -> str:
+    resp = sqs_client.get_queue_url(QueueName=queue_name)
+    return resp["QueueUrl"]

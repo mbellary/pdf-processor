@@ -1,0 +1,27 @@
+FROM python:3.13-slim AS builder
+
+RUN pip install --no-cache-dir uv
+
+WORKDIR /pdf-processor
+
+# Copy metadata and source
+COPY pyproject.toml uv.lock* README.md ./
+COPY src ./src
+
+# Install everything (builds wheel, no editable mode)
+RUN if [ -f uv.lock ]; then \
+      uv sync --frozen --no-install-project; \
+    fi && \
+    uv pip install --system .
+
+# --------------------
+# Final runtime image
+# --------------------
+FROM python:3.13-slim
+
+WORKDIR /pdf-processor
+
+# Copy installed site-packages from builder to keep runtime clean
+COPY --from=builder /usr/local /usr/local
+
+ENTRYPOINT ["worker"]

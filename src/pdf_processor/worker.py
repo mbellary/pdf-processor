@@ -9,24 +9,21 @@ import aioboto3
 from botocore.exceptions import ClientError
 import time
 from pdf_processor.config import (
-                        ENQUEUE_PDF_SQS_URL,
-                        ENQUEUE_PDF_DLQ_URL,
+                        PDF_SQS_QUEUE_NAME,
+                        PDF_DLQ_QUEUE_NAME,
                         MAX_WORKERS,
                         MAX_RETRIES,
                         AWS_REGION,
-                        PDF_FILE_STATE,
+                        PDF_FILE_STATE_NAME,
                         INPUT_S3_BUCKET,
                         SQS_MAX_MESSAGES,
                         SQS_WAIT_TIME,
                         OUTPUT_S3_BUCKET,
                         OUTPUT_S3_PREFIX,
-ENDPOINT_URL,
-AWS_ACCESS_KEY_ID,
-AWS_SECRET_ACCESS_KEY_ID,
-AWS_DDB_ACCESS_KEY_ID,
-AWS_DDB_SECRET_ACCESS_KEY_ID,
-
 )
+from pdf_processor.aws_clients import get_boto3_client, get_aboto3_client
+from pdf_processor.utils import check_if_file_enqueued
+
 
 logger = get_logger("worker")
 
@@ -42,17 +39,20 @@ class Worker:
 
     async def run(self):
         logger.info("Worker starting with max workers=%s", MAX_WORKERS)
-        sess = aioboto3.Session(region_name=AWS_REGION)
+        #sess = aioboto3.Session(region_name=AWS_REGION)
 
         # Create a pool of tasks to process messages
         sem = asyncio.Semaphore(MAX_WORKERS)
         writer = ParquetBatchWriter(OUTPUT_S3_BUCKET, OUTPUT_S3_PREFIX) ## TODo Check writer logic for testing
         tasks = set()
-        async with (sess.client('sqs', region_name=AWS_REGION, endpoint_url=ENDPOINT_URL, aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY_ID) as sqs,
-                    sess.client('dynamodb', region_name=AWS_REGION, endpoint_url=ENDPOINT_URL, aws_access_key_id=AWS_DDB_ACCESS_KEY_ID, aws_secret_access_key=AWS_DDB_SECRET_ACCESS_KEY_ID) as ddb):
+        # async with (sess.client('sqs', region_name=AWS_REGION, endpoint_url=ENDPOINT_URL, aws_access_key_id=AWS_ACCESS_KEY_ID, aws_secret_access_key=AWS_SECRET_ACCESS_KEY_ID) as sqs,
+        #             sess.client('dynamodb', region_name=AWS_REGION, endpoint_url=ENDPOINT_URL, aws_access_key_id=AWS_DDB_ACCESS_KEY_ID, aws_secret_access_key=AWS_DDB_SECRET_ACCESS_KEY_ID) as ddb):
+        async with await get_aboto3_client("sqs") as sqs, await get_aboto3_client("dynamodb") as ddb:
             while self.running: # Continously polls the SQS server
                 try:
-                    resp = await sqs.receive_message(QueueUrl=ENQUEUE_PDF_SQS_URL, MaxNumberOfMessages=SQS_MAX_MESSAGES, WaitTimeSeconds=SQS_WAIT_TIME, VisibilityTimeout=60, AttributeNames=['All'])
+                    queue_response = await sqs.get_queue_url(QueueName=PDF_SQS_QUEUE_NAME)
+                    queue_url = queue_response['QueueUrl']
+                    resp = await sqs.receive_message(QueueUrl=queue_url , MaxNumberOfMessages=SQS_MAX_MESSAGES, WaitTimeSeconds=SQS_WAIT_TIME, VisibilityTimeout=60, AttributeNames=['All'])
                     messages = resp.get('Messages', [])
                     if not messages:
                         await asyncio.sleep(1)
@@ -68,7 +68,10 @@ class Worker:
 
     async def _publish_to_dlq(sqs_client, failed_keys: List[str], reason: str):
         """Optionally push failed keys into DLQ."""
-        if not ENQUEUE_PDF_DLQ_URL or not failed_keys:
+        queue_response = await sqs_client.get_queue_url(QueueName=PDF_SQS_QUEUE_NAME)
+        queue_url = queue_response['QueueUrl']
+
+        if not queue_url or not failed_keys:
             return
 
         payload = {
@@ -76,7 +79,7 @@ class Worker:
             "reason": reason,
         }
         await sqs_client.send_message(
-            QueueUrl=ENQUEUE_PDF_DLQ_URL,
+            QueueUrl=queue_url,
             MessageBody=json.dumps(payload)
         )
         print(f"[dlq] published {len(failed_keys)} failed keys → DLQ")
@@ -123,14 +126,16 @@ class Worker:
                     else:
                         # make message visible again after short backoff by changing visibility timeout
                         try:
-                            await sqs_client.change_message_visibility(QueueUrl=ENQUEUE_PDF_SQS_URL, ReceiptHandle=receipt_handle, VisibilityTimeout=30)
+                            await sqs_client.change_message_visibility(QueueUrl=await sqs_client.get_queue_url(QueueName=PDF_SQS_QUEUE_NAME), ReceiptHandle=receipt_handle, VisibilityTimeout=30)
                         except Exception as ex:
                             logger.exception("Failed to change visibility: %s", ex)
 
             if not failed_keys:
                 # all keys succeeded → delete message
+                queue_response = await sqs_client.get_queue_url(QueueName=PDF_SQS_QUEUE_NAME)
+                queue_url = queue_response['QueueUrl']
                 await sqs_client.delete_message(
-                    QueueUrl=ENQUEUE_PDF_SQS_URL,
+                    QueueUrl=queue_url,
                     ReceiptHandle=msg["ReceiptHandle"]
                 )
                 print(f"[sqs] deleted message with {len(s3_keys)} keys")
