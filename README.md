@@ -1,195 +1,248 @@
-# PDF Processor (Async, Multi-Machine, AWS Native)
+# pdf-processor
 
-This repository provides a **ready-to-run Python package** to process **millions of PDF files** stored in S3.  
-It uses **async I/O, parallel multi-machine workers, SQS for work distribution, DynamoDB for global state, S3 for output, CloudWatch for logging, and Secrets Manager for credentials**.
+[![Powered by ChatGPT](https://img.shields.io/badge/Powered%20by-ChatGPT-10a37f?style=for-the-badge&logo=openai&logoColor=white)](https://openai.com/chatgpt)
 
-The system extracts **per-page text** from PDFs and writes results into **Parquet** format.
 
----
+The **pdf-processor** is a core service within the *Unstruct AI Modular Data Pipeline*, responsible for **processing and transforming PDF documents** stored in S3 into structured text and metadata for downstream NLP and embedding pipelines.
 
-## 🚀 Features
-
-- **Horizontal scaling** across many machines/containers (ECS Fargate, EC2, or K8s).
-- **Asynchronous processing** with `asyncio` + `aioboto3`.
-- **Global state tracking** via DynamoDB (progress, retries, completion).
-- **Manifest tracking** in S3 for auditing/merging.
-- **Resilient queuing** with AWS SQS (and DLQ for failed jobs).
-- **Retry & error handling** (with automatic DLQ routing).
-- **Structured logging** to AWS CloudWatch.
-- **Credential management** via AWS Secrets Manager.
-- **Output in Parquet format**, suitable for downstream analytics.
+This repository supports **asynchronous, containerized processing**, includes **AWS integrations (S3, SQS, DynamoDB)**, and provides **monitoring** via Prometheus and Grafana.
 
 ---
 
-## 📂 Project Structure
-```bash
-pdf_processor/
-├── pdf_processor
-│ ├── init.py
-│ ├── main.py # entrypoint: python -m pdf_processor
-│ ├── config.py # environment & config
-│ ├── aws_clients.py # async boto3 client factories
-│ ├── processor.py # per-PDF processing logic
-│ ├── worker.py # SQS-driven worker loop
-│ ├── manifest.py # manifest writer (S3)
-│ ├── utils.py # helpers (S3 I/O, parquet writer)
-│ └── logger.py # CloudWatch + console logging
-├── requirements.txt
-├── .env.localstack.example
-├── run_worker.sh
-└── README.md
+## 🧩 System Architecture Overview
+
+The `pdf-processor` works as a middle layer in the Unstruct architecture:
+
+| Component | Repository | Description |
+|------------|-------------|-------------|
+| **File Loader** | [`file-loader`](https://github.com/mbellary/file-loader) | Uploads and queues files for processing |
+| **PDF Processor** | [`pdf-processor`](https://github.com/mbellary/pdf-processor) | Converts PDFs to structured text and metadata |
+| **Extractor** | `extraction` | Extracts entities, keywords, and context |
+| **Embeddings** | `embeddings` | Generates vector embeddings (Titan/BGE models) |
+| **Search** | `search` | Indexes processed data into OpenSearch |
+| **Infra (Terraform)** | `infra` | Manages AWS ECS, VPC, Redis, DynamoDB, etc. |
+
+The **pdf-processor** consumes SQS messages produced by the **file-loader**, processes the corresponding S3-stored PDF, and outputs results to:
+- **S3** (for extracted text artifacts)
+- **DynamoDB** (for file metadata and processing status)
+- **SQS** (to trigger downstream services like extraction or embeddings)
+
+---
+
+## ⚙️ Core Responsibilities
+
+- Polls **SQS queue** for new PDF processing jobs  
+- Fetches PDF files from **S3**  
+- Performs text extraction using OCR or PDF parsers (e.g., PyMuPDF, Tesseract)  
+- Generates structured text and metadata JSON  
+- Uploads processed data back to S3  
+- Updates **DynamoDB** with job status and metadata  
+- Publishes completion messages to next-stage **SQS** queue  
+- Exposes Prometheus metrics for monitoring  
+
+---
+
+## 🏗️ Repository Structure
+
+```
+pdf-processor/
+├─ src/pdf_processor/          # Core Python package
+│  ├─ main.py                  # Entry point for worker
+│  ├─ worker.py                # Orchestrates SQS polling and PDF processing
+│  ├─ processor.py             # Handles PDF parsing and text extraction
+│  ├─ aws_client.py            # AWS S3, SQS, DynamoDB utilities
+│  ├─ metrics.py               # Prometheus metrics exporter
+│  └─ __init__.py
+├─ Dockerfile.dev              # Development Dockerfile
+├─ Dockerfile.prod             # Production Dockerfile
+├─ docker-compose.yml          # Compose setup with LocalStack, Prometheus, Grafana
+├─ prometheus.yml              # Prometheus configuration
+├─ requirements.txt            # Python dependencies
+├─ pyproject.toml              # Project build config
+├─ localstack_data/            # LocalStack persistent storage
+├─ grafana_data/               # Grafana storage
+├─ LICENSE                     # Apache License 2.0
+└─ README.md                   # Project documentation
 ```
 
-## 🔧 Setup
+---
 
-### 1. Clone repo
+## 🚀 Quickstart
+
+### 1️⃣ Prerequisites
+
+- Python 3.10+
+- Docker & Docker Compose
+- LocalStack CLI (optional)
+- AWS credentials configured (for non-local use)
+
+### 2️⃣ Clone the repo
+
 ```bash
-git clone https://github.com/your-org/pdf-processor.git
+git clone https://github.com/mbellary/pdf-processor.git
 cd pdf-processor
 ```
 
-## Create Python environment
+### 3️⃣ Run the service
+
 ```bash
-python -m venv venv
-source venv/bin/activate
+docker compose up --build
+```
+
+This spins up:
+- `pdf-processor` worker
+- `localstack` (mock AWS for S3, SQS, DynamoDB)
+- `prometheus` (metrics)
+- `grafana` (dashboards)
+
+> Prometheus → [http://localhost:9090](http://localhost:9090)  
+> Grafana → [http://localhost:3000](http://localhost:3000)  
+> LocalStack → [http://localhost:4566](http://localhost:4566)
+
+---
+
+## 🧠 Local Development
+
+Create a virtual environment and install dependencies:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate   # (Windows: .venv\Scripts\activate)
 pip install -r requirements.txt
+python -m pdf_processor
 ```
 
-## Configure .env
-- Copy .env.example → .env and set values: 
-- Ensure .env is in the project root.
+---
+
+## ⚙️ Configuration
+
+Create a `.env` file with the following variables:
+
+```env
+# AWS and LocalStack
+AWS_ACCESS_KEY_ID=test
+AWS_SECRET_ACCESS_KEY=test
+AWS_DEFAULT_REGION=ap-south-1
+LOCALSTACK_ENDPOINT=http://localstack:4566
+
+# S3 and SQS Resources
+S3_INPUT_BUCKET=unstruct-ingestion-bucket
+S3_OUTPUT_BUCKET=unstruct-processed-bucket
+SQS_INPUT_QUEUE=unstruct-file-events
+SQS_OUTPUT_QUEUE=unstruct-processed-events
+DYNAMODB_TABLE=unstruct-file-metadata
+
+# Processing
+OCR_ENABLED=True
+BATCH_SIZE=10
+
+# Monitoring
+PROMETHEUS_PORT=9092
+LOG_LEVEL=INFO
+```
+
+To create buckets and queues in LocalStack:
 ```bash
-INPUT_S3_BUCKET=s3://my-input-bucket/
-INPUT_S3_PREFIX=pdfs
-OUTPUT_S3_BUCKET=s3://my-output-bucket/
-OUTPUT_S3_PREFIX=parquet
-MANIFEST_S3_BUCKET=s3://my-manifest-bucket/
-MANIFEST_S3_KEY=manifest
-SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789012/my-queue
-DLQ_SQS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/123456789012/my-dlq
-DYNAMO_TABLE_NAME=pdf-processing-state
-SECRET_NAME=my/aws/creds
-AWS_REGION=us-east-1
-MAX_WORKERS=6
-MAX_RETRIES=3
-LOG_GROUP_NAME=/pdf-processor/logs
-
+docker exec -it localstack awslocal s3 mb s3://unstruct-ingestion-bucket
+docker exec -it localstack awslocal s3 mb s3://unstruct-processed-bucket
+docker exec -it localstack awslocal sqs create-queue --queue-name unstruct-file-events
+docker exec -it localstack awslocal sqs create-queue --queue-name unstruct-processed-events
 ```
-## 🛠️ AWS Infrastructure
-- This worker expects existing AWS resources:
-    1. Input S3 Bucket: contains PDF files (INPUT_S3_BUCKET).
-    2. Output S3 Bucket: parquet files written here (OUTPUT_S3_BUCKET).
-    3. SQS Queue: tasks with messages like:
-        ```json
-            {"s3_key": "pdfs/mydoc.pdf"}
-        ```
-    4. DLQ (Dead Letter Queue): for failed jobs.
-    5. DynamoDB Table: state table (DYNAMO_TABLE_NAME).
-        ```bash
-            aws dynamodb create-table \
-            --table-name pdf-processing-state \
-            --attribute-definitions AttributeName=s3_key,AttributeType=S \
-            --key-schema AttributeName=s3_key,KeyType=HASH \
-            --billing-mode PAY_PER_REQUEST
-        ```
-    6. CloudWatch Log Group: defined in LOG_GROUP_NAME.
-    7. IAM Role/Policy with permissions:
-        - S3: GetObject, PutObject, ListBucket
-        - SQS: ReceiveMessage, DeleteMessage, SendMessage, ChangeMessageVisibility
-        - DynamoDB: GetItem, UpdateItem, PutItem
-        - Logs: CreateLogStream, PutLogEvents
-        - SecretsManager: GetSecretValue
 
-## ▶️ Running the Worker
-- Run locally:
-```bash
-    ./run_worker.sh
-    # or
-    python -m pdf_processor
-```
-- Run in background:
-```bash
-    nohup python -m pdf_processor > worker.log 2>&1 &
-```
-- Deploy as container on ECS Fargate (recommended for production).
+---
 
-## 📊 DynamoDB Schema
-- Each PDF has a record:
+## 📦 Example Flow
 
-| Attribute         | Type   | Description                           |
-| ----------------- | ------ | ------------------------------------- |
-| `s3_key`          | String | Primary key (S3 object key)           |
-| `status`          | String | `"processing"`, `"done"`, `"failed"`  |
-| `pages_processed` | Number | Count incremented per page            |
-| `total_pages`     | Number | Set when finished                     |
-| `attempts`        | Number | Retry attempts                        |
-| `last_updated`    | String | ISO timestamp                         |
-| `last_error`      | String | Last error message (truncated to 1KB) |
-
-## 📒 Manifest File
-- Workers append JSON lines to a manifest file in S3:
+1️⃣ The `file-loader` uploads a file to S3 and sends an SQS message:  
 ```json
-    {"s3_key": "pdfs/doc1.pdf", "page": 3, "ts": "2025-08-30T05:33:20Z"}
+{
+  "bucket": "unstruct-ingestion-bucket",
+  "key": "uploads/sample.pdf",
+  "job_id": "12345"
+}
 ```
-- This provides an audit trail of progress.
-(At very high throughput, prefer per-worker manifests and a merge step.)
 
-## ⚙️ Message Processing Flow
+2️⃣ `pdf-processor` receives this message, downloads `sample.pdf`, extracts text, and uploads:
+```
+s3://unstruct-processed-bucket/text/sample.txt
+s3://unstruct-processed-bucket/meta/sample.json
+```
 
-1) SQS Message → Worker
-    - Body contains PDF key (relative to INPUT_S3_BUCKET).
-2) Check DynamoDB
-    - If status=done, skip.
-    - Otherwise set status=processing.
-3) Download PDF (S3) and process per page.
-4) Extract text (PyPDF2) → accumulate per-page records.
-5) Upload Parquet to S3.
-6) Update DynamoDB
-    - Increment pages_processed per page.
-    - On success: set status=done, total_pages.
-    - On error: increment attempts, set status=failed.
-7) Delete or retry SQS message.
-8) Send to DLQ if max retries exceeded.
+3️⃣ It then sends an SQS message to trigger the extractor:
+```json
+{
+  "bucket": "unstruct-processed-bucket",
+  "key": "text/sample.txt",
+  "status": "processed"
+}
+```
 
-## 🔎 Logging
-- Logs are sent to console and CloudWatch (LOG_GROUP_NAME).
-- Example log line:
+---
+
+## 📊 Monitoring and Metrics
+
+- **Prometheus** scrapes metrics from `/metrics` endpoint.  
+- **Grafana** dashboards visualize processing rate, errors, and latency.
+
+Metrics include:
+- `pdf_files_processed_total`
+- `pdf_processing_duration_seconds`
+- `sqs_messages_consumed_total`
+- `s3_upload_failures_total`
+
+---
+
+## 🧪 Testing
+
 ```bash
-    2025-08-30 05:33:21,102 INFO pdf_processor.worker Processing message for pdfs/doc1.pdf
-```
-## 🧪 Testing Locally
-- Use LocalStack for S3/SQS/DynamoDB emulation.
-- localstack : https://github.com/localstack/localstack
-```bash
-    # Run worker against LocalStack
-    AWS_ENDPOINT_URL=http://localhost:4566 \
-    AWS_ACCESS_KEY_ID=test \
-    AWS_SECRET_ACCESS_KEY=test \
-    python -m pdf_processor
+pytest -q
+ruff check src
+black src
 ```
 
-## 🐳 Docker / ECS
-- Build image:
-```bash
-    docker build -t pdf-processor:latest .
-```
-- Run locally:
-```bash
-    docker run --env-file .env.localstack pdf-processor:latest
-```
-- Deploy via ECS Fargate using a TaskDefinition with:
-    - NetworkMode: awsvpc
-    - IAM Task Role granting S3/SQS/DynamoDB access
-    - CPU/memory tuned to PDF load
+---
 
-## ⚠️ Limitations
-- Text extraction uses PyPDF2. For scanned PDFs, integrate OCR (pdf2image + pytesseract or Textract).
-- Manifest append is naïve (re-download/upload). For huge loads, use per-worker manifests + merge.
-- Blocking libs (PyPDF2, pandas/pyarrow) run in a threadpool. If CPU is the bottleneck, scale out horizontally.
-- Retries use ApproximateReceiveCount. Ensure SQS redrive policy is configured for DLQ.
+## 🚀 Deployment
 
-## 📌 Next Steps
-- Add OCR fallback for image-based PDFs.
-- Add a "merge manifests" step.
-- Terraform scripts for infra creation (S3, SQS, DynamoDB, ECS).
-- Unit tests with LocalStack.
+In production, this service runs on **AWS ECS Fargate**, configured by the **Terraform infra repository**.  
+
+Key integrations:
+- ECS Task Definition with IAM role granting access to S3, SQS, DynamoDB  
+- Logs streamed to CloudWatch  
+- Prometheus metrics scraped via ECS service discovery  
+- Deployed via GitHub Actions pipeline on merge to `main`
+
+---
+
+## 🧭 Roadmap
+
+- [X] Add asyncio-based parallel PDF parsing  
+- [X] Integrate OpenAI and Amazon Bedrock OCR models  
+- [X] Add retry strategy for failed S3 uploads  
+- [X] Support multi-page and scanned PDF pipelines  
+- [X] Add CI/CD workflows for ECS deploy  
+- [ ] Extend Prometheus metrics and Grafana dashboards  
+
+---
+
+## 📜 License
+
+Licensed under the [Apache License 2.0](./LICENSE).
+
+---
+
+## 🧾 Author
+
+**Mohammed Ali**  
+📧 [www.linkedin.com/in/mbellary](www.linkedin.com/in/mbellary)
+
+🌐 [https://github.com/mbellary](https://github.com/mbellary)
+
+---
+
+### 🤖 Powered by [ChatGPT](https://openai.com/chatgpt)
+_This project was documented and scaffolded with assistance from OpenAI’s ChatGPT._
+
+---
+
+> _Part of the **Unstruct Modular Data Pipeline** — a fully containerized, serverless-ready ecosystem for ingestion, processing, and search._
