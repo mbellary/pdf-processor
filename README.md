@@ -1,5 +1,8 @@
 # pdf-processor
 
+[![Powered by ChatGPT](https://img.shields.io/badge/Powered%20by-ChatGPT-10a37f?style=for-the-badge&logo=openai&logoColor=white)](https://openai.com/chatgpt)
+
+
 The **pdf-processor** is a core service within the *Unstruct AI Modular Data Pipeline*, responsible for **processing and transforming PDF documents** stored in S3 into structured text and metadata for downstream NLP and embedding pipelines.
 
 This repository supports **asynchronous, containerized processing**, includes **AWS integrations (S3, SQS, DynamoDB)**, and provides **monitoring** via Prometheus and Grafana.
@@ -234,6 +237,11 @@ Licensed under the [Apache License 2.0](./LICENSE).
 📧 [www.linkedin.com/in/mbellary](www.linkedin.com/in/mbellary)
 
 🌐 [https://github.com/mbellary](https://github.com/mbellary)
+
+---
+
+### 🤖 Powered by [ChatGPT](https://openai.com/chatgpt)
+_This project was documented and scaffolded with assistance from OpenAI’s ChatGPT._
 
 ---
 
