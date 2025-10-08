@@ -8,7 +8,7 @@
   "taskRoleArn": "arn:aws:iam::226403923581:role/ecsTaskRole-workers",
   "containerDefinitions": [
     {
-      "name": "worker-processor",
+      "name": "worker-pdf-processor",
       "image": "public.ecr.aws/amazonlinux/amazonlinux:latest",
       "essential": true,
       "portMappings": [{ "containerPort": 80, "protocol": "tcp" }],
