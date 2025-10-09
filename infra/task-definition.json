@@ -8,16 +8,16 @@
   "taskRoleArn": "arn:aws:iam::226403923581:role/ecsTaskRole-workers",
   "containerDefinitions": [
     {
-      "name": "worker-pdf-processor",
+      "name": "worker-processor-container",
       "image": "public.ecr.aws/amazonlinux/amazonlinux:latest",
       "essential": true,
       "portMappings": [{ "containerPort": 80, "protocol": "tcp" }],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {
-          "awslogs-group": "/ecs/worker-processor-task",
+          "awslogs-group": "/ecs/worker-processor-logs",
           "awslogs-region": "ap-south-1",
-          "awslogs-stream-prefix": "worker-processor"
+          "awslogs-stream-prefix": "worker-processor-logs"
         }
       },
       "environment": [
